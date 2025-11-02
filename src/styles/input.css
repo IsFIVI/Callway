@@ -1,0 +1,265 @@
+/* Tailwind v4 entry */
+@import "tailwindcss";
+
+/* Tell Tailwind where to scan for class usage */
+@source "./**/*.{css}";
+@source "../**/*.{html,js}";
+
+/* -------- Tailwind v4 custom components & utilities -------- */
+
+/* Buttons */
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center font-semibold transition-all cursor-pointer;
+  }
+  .btn-primary {
+    @apply bg-white text-black hover:bg-gray-200;
+  }
+  .btn-outline {
+    @apply border-2 border-gray-600 text-gray-300 hover:border-gray-400 hover:text-white bg-transparent;
+  }
+  /* Shared 'Get Started' button used in both navs */
+  .btn-get-started {
+    @apply bg-white text-black px-5 py-2 rounded-full text-sm font-semibold transition-all hover:scale-105 hover:bg-white/90;
+  }
+  .btn-lg {
+    @apply px-8 py-4 rounded-xl text-lg;
+  }
+  .btn-md {
+    @apply px-4 py-2 rounded-lg text-base;
+  }
+
+  /* Navigation links */
+  .link-nav {
+    @apply text-gray-300 font-medium transition-colors hover:text-white;
+  }
+
+  .btn-scale {
+    @apply hover:scale-105;
+  }
+}
+
+/* Shadows & visual helpers */
+@layer utilities {
+  .shadow-heavy {
+    box-shadow: 0 10px 100px rgba(0, 0, 0, 1), 0 20px 200px rgba(0, 0, 0, 1);
+  }
+}
+
+/* iPhone vibration */
+@keyframes phoneVibrate {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  10% {
+    transform: translateX(-2px) rotate(-0.5deg);
+  }
+  20% {
+    transform: translateX(2px) rotate(0.5deg);
+  }
+  30% {
+    transform: translateX(-2px) rotate(-0.5deg);
+  }
+  40% {
+    transform: translateX(2px) rotate(0.5deg);
+  }
+  50% {
+    transform: translateX(-1px) rotate(-0.25deg);
+  }
+  60% {
+    transform: translateX(1px) rotate(0.25deg);
+  }
+  70% {
+    transform: translateX(-1px) rotate(-0.25deg);
+  }
+  80% {
+    transform: translateX(1px) rotate(0.25deg);
+  }
+  90% {
+    transform: translateX(-0.5px);
+  }
+}
+@layer utilities {
+  .phone-vibrate {
+    animation: phoneVibrate 0.8s ease-in-out infinite;
+  }
+}
+
+/* Floating navigation */
+@layer components {
+  .nav-original {
+    @apply relative z-10;
+  }
+  .nav-floating {
+    @apply fixed top-5 left-1/2 -translate-x-1/2 -translate-y-[100px]
+           bg-[rgba(6,10,16,255)]/80 backdrop-blur-[20px] border border-white/10 rounded-full
+           px-6 py-2 transition-all duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]
+           opacity-0 invisible z-[1000]
+           shadow-[0_10px_40px_rgba(0,0,0,0.3)]
+           w-auto;
+    min-width: max-content;
+  }
+  .nav-floating.show {
+    @apply translate-y-0 opacity-100 visible;
+  }
+  .nav-content {
+    @apply flex w-full items-center justify-center gap-6;
+    flex-shrink: 0;
+  }
+  .nav-links {
+    @apply hidden md:flex md:flex-1 items-center md:justify-center gap-6;
+  }
+  .nav-actions {
+    @apply flex items-center gap-4;
+  }
+  .mobile-nav-toggle {
+    @apply inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/5 text-white transition-all duration-200;
+  }
+  .mobile-nav-toggle:hover {
+    @apply bg-white/10;
+  }
+  .mobile-nav-toggle:focus-visible {
+    @apply outline-none ring-2 ring-white/60 ring-offset-2 ring-offset-[rgba(6,10,16,255)];
+  }
+  .mobile-nav-toggle-icon {
+    @apply relative flex h-4 w-5 flex-col justify-between;
+  }
+  .mobile-nav-toggle-bar {
+    @apply block h-0.5 w-full rounded-full bg-white;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+    transform-origin: center;
+  }
+  .mobile-nav-toggle.is-open .mobile-nav-toggle-bar:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+  }
+  .mobile-nav-toggle.is-open .mobile-nav-toggle-bar:nth-child(2) {
+    opacity: 0;
+  }
+  .mobile-nav-toggle.is-open .mobile-nav-toggle-bar:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+  }
+  .mobile-nav-panel {
+    @apply md:hidden overflow-hidden rounded-2xl border border-white/10 bg-[rgba(6,10,16,255)] px-6 py-0;
+    max-height: 0;
+    opacity: 0;
+    pointer-events: none;
+    transition: max-height 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease,
+      padding 0.3s ease;
+  }
+  .mobile-nav-panel.open {
+    @apply py-6;
+    max-height: 400px;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .mobile-nav-link {
+    @apply block rounded-xl px-3 py-2 text-gray-300 font-medium transition-colors duration-200 hover:bg-white/10 hover:text-white;
+  }
+  .mobile-nav-actions {
+    @apply mt-4 flex flex-col gap-3 border-t border-white/10 pt-4;
+  }
+}
+
+@layer components {
+  .anchor-offset {
+    scroll-margin-top: 6rem;
+  }
+  @media (min-width: 768px) {
+    .anchor-offset {
+      scroll-margin-top: 8rem;
+    }
+  }
+}
+
+/* Dots animated background (used by JS) */
+@layer components {
+  .dots-background {
+    @apply absolute inset-0 overflow-hidden z-[1];
+  }
+  .dot {
+    position: absolute;
+    width: 13px;
+    height: 13px;
+    background-color: #374151; /* gray-700 */
+    border-radius: 9999px;
+    transition: background-color 0.3s ease;
+  }
+  .dot.active {
+    background-color: rgba(6, 10, 16, 255);
+  }
+}
+
+/* Sections stacking */
+@layer components {
+  .hero-section {
+    @apply relative z-[1];
+  }
+  .hero-content {
+    @apply relative z-[2];
+  }
+  .reasons-choose-section {
+    @apply relative z-[1];
+  }
+  .pricing-section {
+    @apply relative z-[1];
+  }
+  .reasons-content {
+    @apply relative z-[2];
+  }
+  .features-section {
+    @apply relative z-[1];
+  }
+  .features-content {
+    @apply relative z-[2];
+  }
+}
+
+/* Cards */
+@layer components {
+  .feature-card {
+    @apply bg-black/60 backdrop-blur-[12px] rounded-[35px] p-8 transition-all max-w-[500px] mt-24;
+  }
+  .feature-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 120px rgba(0, 0, 0, 1), 0 25px 220px rgba(0, 0, 0, 1);
+  }
+  .feature-card h3 {
+    @apply text-white text-xl font-bold mb-4 leading-snug;
+  }
+  .feature-card p {
+    @apply text-gray-300 text-base leading-relaxed mb-6;
+  }
+  .cta-button {
+    @apply inline-block no-underline;
+  }
+
+  /* First card special offset kept for parity if used anywhere */
+  .first-feature-card {
+    @apply bg-black/60 backdrop-blur-[12px] rounded-[35px] p-8 transition-all max-w-[500px] -mt-24;
+  }
+}
+
+/* Hero main text card */
+@layer components {
+  .main-text-card-hero-section {
+    @apply bg-black/60 backdrop-blur-[12px] rounded-[35px] p-6;
+  }
+}
+
+/* Answer button on phone */
+@layer components {
+  .answer-button {
+    @apply rounded-full text-white font-semibold text-lg transition-all hover:scale-105 shadow-lg
+           border-2 border-gray-500;
+    background: linear-gradient(135deg, #374151 0%, #1f2937 100%);
+  }
+  .answer-button:hover {
+    background: linear-gradient(135deg, #4b5563 0%, #374151 100%);
+    border-color: #9ca3af;
+  }
+  .answer-button.is-active {
+    @apply border-white/80;
+    background: linear-gradient(135deg, #1f2937 0%, #111827 100%);
+  }
+}
