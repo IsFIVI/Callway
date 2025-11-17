@@ -12,6 +12,9 @@ const twilio = require("twilio");
 const leadSummaryStore = new Map(); // lead_id -> { summary, lead, stored_at }
 const activeTwilioBridges = new Set(); // Set<TwilioOpenAIBridge>
 
+// --- Constantes audio ---
+const TWILIO_CHUNK_DURATION_MS = 20; // ~20 ms par paquet G.711 μ-law envoyé à Twilio
+
 // --- Helper: normalisation numéros (utilisé par save_lead) ---
 function normalizePhoneNumber(input, countryHint, env) {
   const DEFAULT_PHONE_REGION = (env.DEFAULT_PHONE_REGION || "FR").toUpperCase();
@@ -109,6 +112,11 @@ class TwilioOpenAIBridge {
     this.pendingInboundAudio = [];
     this.openAiSocket = null;
     this.openAiReady = false;
+    // État pour le suivi de la réponse assistant (utile pour le barge-in)
+    this.currentResponseId = null;
+    this.currentAssistantItemId = null;
+    this.assistantAudioMs = 0;
+    this.suppressAssistantAudio = false;
 
     this.setupTwilioSocket();
     this.connectOpenAI();
@@ -276,6 +284,27 @@ class TwilioOpenAIBridge {
 
   handleOpenAIMessage(message) {
     switch (message.type) {
+      case "response.created": {
+        const responseId = message.response?.id || null;
+        this.currentResponseId = responseId;
+        this.assistantAudioMs = 0;
+        this.suppressAssistantAudio = false;
+        this.currentAssistantItemId = null;
+        console.info("[bridge] OpenAI response created", { responseId });
+        break;
+      }
+      case "response.output_item.added": {
+        const item = message.item || null;
+        if (item && (item.role === "assistant" || item.type === "message")) {
+          this.currentAssistantItemId = item.id;
+          console.info("[bridge] Assistant item added", {
+            itemId: item.id,
+            role: item.role,
+            type: item.type,
+          });
+        }
+        break;
+      }
       case "response.audio.delta":
       case "response.output_audio.delta": {
         const base64Payload = message.delta ?? message.audio ?? null;
@@ -283,9 +312,24 @@ class TwilioOpenAIBridge {
         this.sendAudioToTwilio(base64Payload);
         break;
       }
-      case "response.completed":
-        console.info("[bridge] OpenAI response completed", message.response?.id);
+      case "input_audio_buffer.speech_started": {
+        console.info("[bridge] Detected user speech (speech_started). Triggering barge-in.");
+        this.handleUserBargeIn();
         break;
+      }
+      case "response.completed":
+      case "response.done":
+      case "response.cancelled": {
+        console.info("[bridge] OpenAI response finished", {
+          type: message.type,
+          responseId: message.response?.id || message.response_id,
+        });
+        this.currentResponseId = null;
+        this.currentAssistantItemId = null;
+        this.assistantAudioMs = 0;
+        this.suppressAssistantAudio = false;
+        break;
+      }
       case "error":
         console.error("[bridge] OpenAI error", message);
         break;
@@ -294,9 +338,70 @@ class TwilioOpenAIBridge {
     }
   }
 
+  handleUserBargeIn() {
+    if (this.closed || !this.openAiSocket) return;
+    const hasActiveResponse = !!this.currentResponseId;
+
+    if (hasActiveResponse) {
+      this.suppressAssistantAudio = true;
+      console.info("[bridge] Suppressing assistant audio due to barge-in.");
+    }
+
+    if (hasActiveResponse) {
+      try {
+        this.openAiSocket.send(
+          JSON.stringify({
+            type: "response.cancel",
+          })
+        );
+        console.info("[bridge] Sent response.cancel to OpenAI");
+      } catch (error) {
+        console.error("[bridge] Failed to send response.cancel", error);
+      }
+    }
+
+    if (this.currentAssistantItemId && this.assistantAudioMs > 0) {
+      const truncatePayload = {
+        type: "conversation.item.truncate",
+        item_id: this.currentAssistantItemId,
+        content_index: 0,
+        audio_end_ms: this.assistantAudioMs,
+      };
+      try {
+        this.openAiSocket.send(JSON.stringify(truncatePayload));
+        console.info("[bridge] Sent conversation.item.truncate to OpenAI", truncatePayload);
+      } catch (error) {
+        console.error("[bridge] Failed to send conversation.item.truncate", error);
+      }
+    }
+
+    if (this.connection && this.connection.readyState === WebSocket.OPEN && this.streamSid) {
+      try {
+        this.connection.send(
+          JSON.stringify({
+            event: "clear",
+            streamSid: this.streamSid,
+          })
+        );
+        console.info("[bridge] Sent clear to Twilio to flush assistant audio.");
+      } catch (error) {
+        console.error("[bridge] Failed to send clear to Twilio", error);
+      }
+    }
+  }
+
   sendAudioToTwilio(base64Payload) {
     if (!base64Payload || !this.streamSid || this.closed) return;
-    if (this.connection.readyState !== WebSocket.OPEN) return;
+    if (!this.connection || this.connection.readyState !== WebSocket.OPEN) return;
+
+    // Si un barge-in a été détecté, on n'envoie plus de son IA vers Twilio.
+    if (this.suppressAssistantAudio) {
+      return;
+    }
+
+    // Chaque chunk μ-law ≈ 20 ms (8 kHz / 160 samples). On incrémente la durée émise.
+    this.assistantAudioMs = (this.assistantAudioMs || 0) + TWILIO_CHUNK_DURATION_MS;
+
     try {
       this.connection.send(
         JSON.stringify({
@@ -343,6 +448,10 @@ class TwilioOpenAIBridge {
     this.closed = true;
     this.openAiReady = false;
     this.pendingInboundAudio = [];
+    this.currentResponseId = null;
+    this.currentAssistantItemId = null;
+    this.assistantAudioMs = 0;
+    this.suppressAssistantAudio = false;
 
     try {
       if (this.connection && this.connection.readyState === WebSocket.OPEN) {
