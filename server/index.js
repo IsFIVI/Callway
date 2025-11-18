@@ -43,6 +43,9 @@ app.get("/api/health", (_req, res) => {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_REALTIME_MODEL =
   process.env.OPENAI_REALTIME_MODEL || "gpt-realtime";
+const WEB_END_SESSION_DELAY_MS = Number(
+  process.env.WEB_END_SESSION_DELAY_MS || "5000"
+);
 
 if (!OPENAI_API_KEY) {
   console.warn(
@@ -112,6 +115,23 @@ app.post("/api/realtime-token", express.json(), async (req, res) => {
         additionalProperties: false,
       },
     },
+    {
+      type: "function",
+      name: "end_session",
+      description:
+        "Close the current realtime session on the landing page once every required action is completed.",
+      parameters: {
+        type: "object",
+        properties: {
+          reason: {
+            type: "string",
+            description:
+              "Optional sentence explaining to the user why the session is closing (e.g. callback scheduled).",
+          },
+        },
+        additionalProperties: false,
+      },
+    },
   ];
 
   try {
@@ -132,28 +152,30 @@ app.post("/api/realtime-token", express.json(), async (req, res) => {
             : {}),
           tools: baseTools,
           instructions: [
-            "Tu es Callway, l’agent IA vocal qui accueille les visiteurs de la landing page.",
+            "Tu es Callway, un agent IA vocal téléphonique qui accueille les visiteurs de la landing page callway.",
             "Ta mission est de présenter Callway (agent IA téléphonique), répondre aux questions,",
-            "puis guider la conversation vers une proposition de rappel téléphonique par notre IA.",
+            "puis guider la conversation vers une proposition que tu les rappelle par téléphone.",
             "",
             "Processus à suivre :",
             "1. Explore poliment le contexte et les besoins de l’utilisateur.",
-            "2. Présente les bénéfices clés de Callway (disponibilité 24/7, intégrations, transfert humain, multilingue…).",
+            "2. Présente les bénéfices clés de Callway (disponibilité 24h sur 24, 7j sur 7, intégrations, transfert humain, multilingue…).",
             "3. Propose un rappel téléphonique lorsqu’il y a un intérêt manifeste.",
-            "4. Si l’utilisateur accepte, collecte prénom, nom et numéro de téléphone EXACTEMENT comme il le dicte.",
-            "   Ne convertis pas le numéro : tu dois transmettre le numéro brut.",
+            "4. Si l’utilisateur accepte, collecte prénom, nom et numéro de téléphone.",
+            "   Ne convertis pas le numéro : tu dois transmettre le numéro brut, tel que l'utilisateur l'a dicté.",
             "5. Fais valider toutes les informations (prénom, nom, numéro) avant de déclencher le rappel.",
             "   Lorsque tu répètes le numéro, restitue-le exactement comme l’utilisateur l’a dicté, sans ajout ni conversion.",
             "   N’invente, ne reformule ni ne convertis jamais le numéro ; laisse-le brut et laisse le backend réaliser les vérifications.",
-            "6. Appelle la fonction save_lead uniquement après validation.",
+            "6. Puis ppelle la fonction save_lead.",
             "7. Lorsque tu reçois la réponse de save_lead, si success=false, explique l’erreur et redemande poliment le numéro (avec l’indicatif pays).",
             "8. Une fois save_lead exécutée avec succès, propose immédiatement de lancer le rappel.",
             "9. Lorsque l’utilisateur confirme, appelle trigger_call en fournissant le lead_id et un court résumé",
             "   de la conversation (en français). Indique au résumé : besoins, points clés et consentement.",
-            "10. Préviens l’utilisateur que l’appel va démarrer, remercie-le, puis clôture la session web.",
+            "10. Lorsque trigger_call réussit, annonce que l’appel va démarrer",
+            " 11. Puis une fois que a terminé d'annoncer que l’appel va démarrer informe l'utilisateur que tu vas clôturer la session web.",
+            "11. Puis Appelle la fonction end_session pour raccrocher proprement la session.",
             "",
             "Contraintes supplémentaires :",
-            "- Tu es toujours courtois, naturel et proactif. Ton ton est francophone natif.",
+            "- Tu es toujours courtois, naturel et proactif. Ton ton est francophone natif mais tu as la capatité de parler plusieurs langues si l'utilisateur le demande.",
             "- Tu confirmes explicitement le consentement à être rappelé avant toute action.",
             "- Tu valides que le numéro paraît correct et rassures sur la confidentialité.",
             "  Ne reformule pas et ne convertis jamais le numéro : laisse-le exactement tel qu'il a été dicté.",
@@ -161,6 +183,8 @@ app.post("/api/realtime-token", express.json(), async (req, res) => {
             "- Si l’utilisateur refuse ou est hésitant, respecte la décision et reste disponible pour autre chose.",
             "- Si l’utilisateur demande un rappel ultérieur, note-le dans le résumé.",
             "- Mentionne qu’aucune information n’est partagée en dehors de Callway.",
+            "- Utilise end_session après le déclenchement du rappel ou lorsque l’utilisateur demande expressément de terminer.",
+            "Lorsque tu dois utiliser end_sesion, utilise l'outils uniquement quand tu as terminé de parler et dis à l'utilisateur que tu racrochai car end-sesion coupe instentanément ta parole",
           ].join("\n"),
         }),
       }
@@ -178,7 +202,17 @@ app.post("/api/realtime-token", express.json(), async (req, res) => {
     }
 
     const data = await response.json();
-    return res.status(200).json(data);
+    const delayMs =
+      Number.isFinite(WEB_END_SESSION_DELAY_MS) && WEB_END_SESSION_DELAY_MS >= 0
+        ? WEB_END_SESSION_DELAY_MS
+        : 5000;
+
+    return res.status(200).json({
+      ...data,
+      callway_config: {
+        web_end_session_delay_ms: delayMs,
+      },
+    });
   } catch (error) {
     console.error("[server] Failed to create OpenAI Realtime session", error);
     return res

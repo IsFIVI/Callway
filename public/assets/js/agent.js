@@ -15,6 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const initialStatusText = voiceStatus?.textContent?.trim() ?? "";
 
   const apiBaseUrl = (window.CALLWAY_API_BASE || "").replace(/\/$/, "");
+  let endSessionDelayMs = 5000;
 
   let isActive = false;
   let greetingSent = false;
@@ -330,6 +331,53 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
+  const runEndSessionTool = (call) => {
+    if (!call || call.name !== "end_session") {
+      return;
+    }
+
+    const toolCallId = call.toolCallId || call.callId || call.itemId;
+    const responseId = call.callId || call.responseId;
+
+    if (!toolCallId) {
+      console.warn("[agent] end_session without toolCallId", call);
+      return;
+    }
+
+    if (processedToolCallIds.has(toolCallId)) {
+      return;
+    }
+    processedToolCallIds.add(toolCallId);
+
+    const reason =
+      typeof call.args?.reason === "string" && call.args.reason.trim().length > 0
+        ? call.args.reason.trim()
+        : null;
+
+    const payload = {
+      success: true,
+      data: { state: "session_closing" },
+    };
+    sendToolOutput(toolCallId, responseId, payload);
+
+    const closingMessage =
+      reason ||
+      "Callway va raccrocher. Merci et restez près de votre téléphone.";
+
+    if (voiceStatus) {
+      voiceStatus.textContent = closingMessage;
+    }
+
+    setTimeout(() => {
+      setActiveState(false);
+      if (voiceStatus) {
+        voiceStatus.textContent =
+          reason ||
+          "Session terminée. Merci et à bientôt.";
+      }
+    }, endSessionDelayMs);
+  };
+
   const processToolCall = (call) => {
     if (!call || !call.name) {
       console.warn("[agent] Tool call without name", call);
@@ -344,6 +392,9 @@ document.addEventListener("DOMContentLoaded", () => {
         break;
       case "trigger_call":
         runTriggerCallTool(call);
+        break;
+      case "end_session":
+        runEndSessionTool(call);
         break;
       default:
         console.warn("[agent] Unsupported tool call", call.name);
@@ -670,6 +721,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
       const sessionPayload = await tokenResponse.json();
       const { client_secret: clientSecret, model } = sessionPayload;
+
+      const configuredDelay =
+        sessionPayload?.callway_config?.web_end_session_delay_ms;
+      if (
+        typeof configuredDelay === "number" &&
+        Number.isFinite(configuredDelay) &&
+        configuredDelay >= 0
+      ) {
+        endSessionDelayMs = configuredDelay;
+      }
 
       if (!clientSecret || !clientSecret.value) {
         throw new Error("No client secret returned by /api/realtime-token");

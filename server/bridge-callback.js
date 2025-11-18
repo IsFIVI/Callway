@@ -97,8 +97,9 @@ function normalizePhoneNumber(input, countryHint, env) {
 
 // --- Classe Bridge Twilio <-> OpenAI ---
 class TwilioOpenAIBridge {
-  constructor({ ws, context, env }) {
+  constructor({ ws, context, env, twilioClient }) {
     this.env = env;
+    this.twilioClient = twilioClient || null;
     this.connection = ws;
     this.summary = context.summary || null;
     this.lead = context.lead || null;
@@ -117,6 +118,9 @@ class TwilioOpenAIBridge {
     this.currentAssistantItemId = null;
     this.assistantAudioMs = 0;
     this.suppressAssistantAudio = false;
+    // Règle métier : silence utilisateur après salutation
+    this.userHasSpoken = false;
+    this.userSilenceTimer = null;
 
     this.setupTwilioSocket();
     this.connectOpenAI();
@@ -263,22 +267,68 @@ class TwilioOpenAIBridge {
     });
   }
 
+  startUserSilenceTimeout() {
+    if (this.userSilenceTimer) {
+      clearTimeout(this.userSilenceTimer);
+    }
+    this.userHasSpoken = false;
+    this.userSilenceTimer = setTimeout(() => {
+      if (this.closed) return;
+      if (!this.userHasSpoken) {
+        console.info("[bridge] No user speech detected within 10s. Hanging up call.");
+        this.hangupCallDueToSilence();
+      }
+    }, 20_000);
+  }
+
+  markUserHasSpoken() {
+    if (this.userHasSpoken) return;
+    this.userHasSpoken = true;
+    if (this.userSilenceTimer) {
+      clearTimeout(this.userSilenceTimer);
+      this.userSilenceTimer = null;
+      console.info("[bridge] User speech detected; silence timeout cancelled.");
+    }
+  }
+
+  async hangupCallDueToSilence() {
+    this.shutdown();
+    if (!this.callSid || !this.twilioClient) {
+      console.warn("[bridge] Cannot hang up Twilio call (missing callSid or client).");
+      return;
+    }
+    try {
+      await this.twilioClient.calls(this.callSid).update({
+        twiml: '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+      });
+      console.info("[bridge] Twilio call hung up due to silence.", { callSid: this.callSid });
+    } catch (error) {
+      console.error("[bridge] Failed to hang up Twilio call due to silence", {
+        callSid: this.callSid,
+        error,
+      });
+    }
+  }
+
   buildInstructions() {
     let base =
-      "Tu es Callway, l'agent IA téléphonique. Continue la discussion entamée sur la landing page en restant chaleureux, professionnel et en français.";
-    if (this.summary) base += `\nRésumé de la session web : ${this.summary}`;
+      "Tu es Callway, un agent IA vocal téléphonique qui accueille les visiteurs de la landing page callway";
+      "Durant la discution avec l'utilisateur sur landing, tu lui as proposé de le rappeler sur son propre téléphone, l'utilisateur a accepte, tu as donc collecté le prenom, nom et numéro de téléphone de l'utilisateur pour proceder au rappel"
+      "Tu te retrouve donc maintenant au téléphone avec l'tulisateur pour pousuivre la discution"
+    if (this.summary) base += `\n Voici le résumé de la discusion que tu as eu avec l'utilisateur sur la landing : ${this.summary}`;
+    "Reprend la discussion sur un élément évoqué durant le dialogue sur la landing  et essaye d'augmenter l'interet de l'utilisateur vis a vis de toi et de ton implementation dans l'activité de l'utilisateur"
     if (this.lead) {
       const fullName = [this.lead.first_name, this.lead.last_name]
         .filter(Boolean)
         .join(" ")
         .trim();
-      if (fullName) base += `\nInterlocuteur : ${fullName}.`;
+      if (fullName) base += `\nRappel l'interlocuteur s'appelle : ${fullName}.`;
       if (this.lead.phone_raw || this.lead.phone_e164) {
-        base += `\nNuméro confirmé : ${this.lead.phone_raw || this.lead.phone_e164}.`;
+        base += `\nSon numéro confirmé : ${this.lead.phone_raw || this.lead.phone_e164}.`;
       }
     }
     base +=
-      "\nObjectif : confirmer le rappel, répondre aux questions, rassurer sur la confidentialité et proposer les prochaines étapes Callway.";
+      "\nL'ojectif est d'amener la discusion de manière suptile vers la prise d'un rendez vous avec notre equipe commenciale pour parler de l'agent ia Callway plus en profondeur avec nos experts.";
     return base;
   }
 
@@ -314,6 +364,7 @@ class TwilioOpenAIBridge {
       }
       case "input_audio_buffer.speech_started": {
         console.info("[bridge] Detected user speech (speech_started). Triggering barge-in.");
+        this.markUserHasSpoken();
         this.handleUserBargeIn();
         break;
       }
@@ -432,12 +483,13 @@ class TwilioOpenAIBridge {
             modalities: ["audio", "text"],
             voice: "alloy",
             instructions:
-              "Le correspondant vient de décrocher. Accueille-le chaleureusement en français en te présentant comme l'agent Callway, puis poursuis immédiatement la discussion entamée sur le site.",
+              "L'utilisateur vient de répondre à l'appel. Accueille-le chaleureusement en français en te présentant comme l'agent Callway, puis poursuis immédiatement la discussion entamée sur le site.",
           },
         })
       );
       this.didIntro = true;
       console.info("[bridge] Greeting triggered via response.create");
+      this.startUserSilenceTimeout();
     } catch (error) {
       console.error("[bridge] Failed to send greeting", error);
     }
@@ -452,6 +504,10 @@ class TwilioOpenAIBridge {
     this.currentAssistantItemId = null;
     this.assistantAudioMs = 0;
     this.suppressAssistantAudio = false;
+    if (this.userSilenceTimer) {
+      clearTimeout(this.userSilenceTimer);
+      this.userSilenceTimer = null;
+    }
 
     try {
       if (this.connection && this.connection.readyState === WebSocket.OPEN) {
@@ -564,7 +620,10 @@ function setupCallbackFeature({ app, server }) {
     TWILIO_REQUIRE_VERIFIED_NUMBERS: parseBooleanFlag(
       process.env.TWILIO_REQUIRE_VERIFIED_NUMBERS || "0"
     ),
+    TWILIO_TRIGGER_DELAY_MS: Number(process.env.TWILIO_TRIGGER_DELAY_MS || "0"),
   };
+
+  const twilioBodyParser = express.urlencoded({ extended: false });
 
   // Supabase client
   let supabaseClient = null;
@@ -711,13 +770,40 @@ function setupCallbackFeature({ app, server }) {
         return res.status(500).json({ error: "Unable to build Twilio stream URL." });
       }
 
+      const delayMs =
+        Number.isFinite(env.TWILIO_TRIGGER_DELAY_MS) && env.TWILIO_TRIGGER_DELAY_MS > 0
+          ? env.TWILIO_TRIGGER_DELAY_MS
+          : 0;
+
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+
+      let twimlAsyncUrl;
       try {
-        const twiml = buildTwiml(streamUrl);
-        console.info("[server] Twilio stream URL", { stream_url: streamUrl });
+        if (!env.PUBLIC_APP_URL) {
+          throw new Error("PUBLIC_APP_URL must be configured for async TwiML URL");
+        }
+        const asyncUrl = new URL(env.PUBLIC_APP_URL);
+        asyncUrl.pathname = "/api/twilio/outbound-voice-async";
+        asyncUrl.searchParams.set("lead_id", leadId);
+        asyncUrl.searchParams.set("lang", preferredLanguage);
+        twimlAsyncUrl = asyncUrl.toString();
+      } catch (error) {
+        console.error("[server] Failed to build outbound-voice-async URL", error);
+        return res.status(500).json({ error: "Unable to build Twilio callback URL." });
+      }
+
+      try {
+        console.info("[server] Twilio outbound-voice-async URL", { twiml_url: twimlAsyncUrl });
         const call = await twilioClient.calls.create({
           from: env.TWILIO_PHONE_NUMBER_FROM,
           to: lead.phone_e164,
-          twiml,
+          url: twimlAsyncUrl,
+          machineDetection: "Enable",
+          asyncAmd: true,
+          asyncAmdStatusCallback: `${env.PUBLIC_APP_URL}/api/twilio/amd-callback`,
+          asyncAmdStatusCallbackMethod: "POST",
         });
 
         leadSummaryStore.set(leadId, {
@@ -764,6 +850,86 @@ function setupCallbackFeature({ app, server }) {
     } catch (error) {
       console.error("[server] Unexpected error during trigger_call", error);
       return res.status(500).json({ error: "Unexpected error while triggering the call." });
+    }
+  });
+
+  app.post("/api/twilio/outbound-voice-async", twilioBodyParser, (req, res) => {
+    const leadId = req.query.lead_id || null;
+    const language =
+      req.query.lang || req.query.language || req.query.locale || "fr";
+    const callSid = req.body.CallSid || null;
+
+    console.info("[twiml-async] Outbound voice webhook", {
+      callSid,
+      leadId,
+      language,
+    });
+
+    if (!leadId) {
+      console.warn("[twiml-async] Missing lead_id");
+      res.type("text/xml");
+      return res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+    }
+
+    try {
+      const streamUrl = resolveTwilioStreamUrl(env, leadId, { lang: language });
+      const twiml = buildTwiml(streamUrl);
+      res.type("text/xml");
+      return res.send(twiml);
+    } catch (error) {
+      console.error("[twiml-async] Failed to build TwiML", error);
+      res.type("text/xml");
+      return res.send('<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>');
+    }
+  });
+
+  app.post("/api/twilio/amd-callback", twilioBodyParser, async (req, res) => {
+    const callSid = req.body.CallSid || null;
+    const rawAnsweredBy = req.body.AnsweredBy || "";
+    const answeredBy = rawAnsweredBy.toLowerCase();
+    const detectionMs = req.body.MachineDetectionDuration || null;
+
+    console.info("[amd-callback] AMD result", {
+      callSid,
+      answeredBy,
+      detectionMs,
+    });
+
+    res.sendStatus(200);
+
+    if (!callSid) {
+      console.warn("[amd-callback] Missing CallSid");
+      return;
+    }
+
+    if (answeredBy === "human" || answeredBy === "unknown") {
+      console.info("[amd-callback] Human or unknown detected, keeping call active.");
+      return;
+    }
+
+    const isMachine = answeredBy.startsWith("machine") || answeredBy === "fax";
+    if (!isMachine) {
+      console.info("[amd-callback] AMD result not fatal, keeping call.", { answeredBy });
+      return;
+    }
+
+    console.info("[amd-callback] Non-human (machine/fax) detected, hanging up.", {
+      callSid,
+      answeredBy,
+    });
+
+    if (!twilioClient) {
+      console.warn("[amd-callback] Twilio client not configured");
+      return;
+    }
+
+    try {
+      await twilioClient.calls(callSid).update({
+        twiml: '<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>',
+      });
+      console.info("[amd-callback] Call updated with Hangup", { callSid });
+    } catch (error) {
+      console.error("[amd-callback] Failed to hang up call", { callSid, error });
     }
   });
 
@@ -883,6 +1049,7 @@ function setupCallbackFeature({ app, server }) {
             language: preferredLanguage,
           },
           env,
+          twilioClient,
         });
         activeTwilioBridges.add(bridge);
       })
